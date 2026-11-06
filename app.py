@@ -1,15 +1,21 @@
+import html as htmlmod
 import os
+import re
 import threading
 import time
 import urllib.parse
 import urllib.request
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 IDX_URL = os.environ.get("IDX_URL", "https://363454.github.io/-/idx.txt")
 SITE = "https://www.shuhaoxs.com"
 PAGE_SIZE = 100
+UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+)
 
 _state = {"lines": [], "ts": 0.0}
 _lock = threading.Lock()
@@ -39,6 +45,45 @@ def esc(text):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def fetch(url):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Referer": SITE + "/",
+        },
+    )
+    return urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
+
+
+PROMO = re.compile(
+    r"(shuhaoxs\.com|书豪小说网|分类导航|立即阅读正文|开启今日精彩|读取当前章节内容失败"
+    r"|yimozww\.com|bingrenxs\.com|tongnianshuwu\.com|baimaxsw\.com|请退出|本章未完|点击下一页)"
+)
+
+
+def content_text(page):
+    m = re.search(r'<div class="content"[^>]*>(.*?)</div>', page, re.S)
+    if not m:
+        return ""
+    body = m.group(1).replace("</p>", "\n")
+    body = re.sub(r"<[^>]+>", "", body)
+    body = htmlmod.unescape(body)
+    lines = []
+    for raw in body.split("\n"):
+        line = raw.replace("\u00a0", " ").strip()
+        if not line:
+            continue
+        if PROMO.search(line):
+            continue
+        if line in ("下一页", "上一页"):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 app = FastAPI()
@@ -107,6 +152,42 @@ def search(kw: str = "", p: int = 1, fmt: str = ""):
         )
     buf.append("</body></html>")
     return HTMLResponse("".join(buf))
+
+
+@app.get("/read")
+def read(u: str = ""):
+    target = (u or "").strip()
+    if not target.startswith("http"):
+        target = SITE + (target if target.startswith("/") else "/" + target)
+    if "shuhaoxs.com" not in target:
+        return PlainTextResponse("bad url", status_code=400)
+
+    chunks = []
+    for idx, page_url in enumerate([target, target.replace(".html", "-2.html")]):
+        if idx == 1:
+            if not page_url.endswith("-2.html"):
+                break
+        try:
+            page = fetch(page_url)
+        except Exception:
+            break
+        text = content_text(page)
+        if not text:
+            continue
+        if len(text) < 120 and "读取" in text:
+            continue
+        chunks.append(text)
+        if idx == 1:
+            break
+
+    body = "\n".join(chunks).strip()
+    if not body:
+        body = "本章内容暂时无法读取（站点本身缺失该章正文）。"
+    return HTMLResponse(
+        '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
+        '<div class="content"><p>' + esc(body).replace("\n", "</p><p>") + "</p></div>"
+        "</body></html>"
+    )
 
 
 @app.get("/health")
