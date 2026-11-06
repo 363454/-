@@ -190,6 +190,18 @@ def read(u: str = ""):
     )
 
 
+@app.get("/dbg")
+def dbg(u: str = ""):
+    try:
+        page = fetch(u)
+    except Exception as exc:
+        return PlainTextResponse("ERR " + type(exc).__name__ + " " + str(exc)[:200], status_code=500)
+    idx = page.find('class="content"')
+    head = page[:300]
+    seg = page[max(0, idx - 60): idx + 500] if idx > 0 else "NO_CONTENT_DIV"
+    return PlainTextResponse("HEAD>>> " + head + "\n\n=== CONTENT AREA ===\n" + seg)
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "rows": len(_state["lines"])}
